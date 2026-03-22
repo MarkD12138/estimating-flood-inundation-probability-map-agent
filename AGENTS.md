@@ -147,7 +147,7 @@ G. Dist. to nearest stream
 - If needed, use sf::st_distance with nearest feature logic.
 
 H. Water cover area
-- Source: calgary_surf_water_tif
+- Source: calgary_surf_water.tif
 - Method:
   1. interpret raster so water cells are distinguished from non-water / nodata,
   2. within each fishnet cell, sum the area of raster cells classified as surface water.
