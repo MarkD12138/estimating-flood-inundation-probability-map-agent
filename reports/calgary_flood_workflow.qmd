@@ -13,13 +13,30 @@ execute:
 
 # Setup / libraries / reproducibility notes
 
-This report builds a Calgary-only flood inundation probability workflow in R. It creates a 30 m fishnet, derives the binary inundation target, engineers all required features, performs exploratory checks and minor cleaning, fits a `glm` logistic regression model, and saves validation outputs for later reuse.
+This report builds a Calgary-only flood inundation probability workflow in R. It creates a 60 m fishnet, derives the binary inundation target, engineers all required features, performs exploratory checks and minor cleaning, fits a `glm` logistic regression model, and saves validation outputs for later reuse.
 
 ```{r}
 # Locate the project root, register the project-local R library, and load packages.
-report_dir <- normalizePath(dirname(knitr::current_input(dir = TRUE)), winslash = "/", mustWork = TRUE)
-project_root <- normalizePath(file.path(report_dir, ".."), winslash = "/", mustWork = TRUE)
-.libPaths(c(normalizePath(file.path(project_root, "r_libs")), .libPaths()))
+current_input_path <- tryCatch(knitr::current_input(dir = TRUE), error = function(e) NULL)
+candidate_dirs <- unique(normalizePath(
+  c(
+    if (!is.null(current_input_path) && nzchar(current_input_path)) dirname(current_input_path) else character(0),
+    getwd(),
+    file.path(getwd(), "..")
+  ),
+  winslash = "/",
+  mustWork = FALSE
+))
+project_root <- candidate_dirs[
+  vapply(candidate_dirs, function(x) {
+    dir.exists(file.path(x, "data")) && dir.exists(file.path(x, "R"))
+  }, logical(1))
+][1]
+if (is.na(project_root) || !nzchar(project_root)) {
+  stop("Could not detect the project root. Open the project in RStudio or set the working directory to the repo root or the reports folder.")
+}
+project_root <- normalizePath(project_root, winslash = "/", mustWork = TRUE)
+.libPaths(c(normalizePath(file.path(project_root, "r_libs"), winslash = "/", mustWork = FALSE), .libPaths()))
 
 # Set chunk defaults so the report is readable and reproducible.
 knitr::opts_chunk$set(
@@ -40,16 +57,28 @@ required_packages <- c(
 invisible(lapply(required_packages, library, character.only = TRUE))
 sf::sf_use_s2(FALSE)
 
-# Source the helper scripts that own each major stage of the workflow.
-source(file.path(project_root, "R", "01_setup_target.R"))
-source(file.path(project_root, "R", "02_features_topography_hydrology_watershed.R"))
-source(file.path(project_root, "R", "03_features_landcover_built.R"))
-source(file.path(project_root, "R", "04_merge_eda_clean.R"))
-source(file.path(project_root, "R", "05_model_diagnostics.R"))
+# Source each helper script into its own environment so internal utility names do not collide.
+load_stage_function <- function(script_name, fun_name) {
+  stage_env <- new.env(parent = globalenv())
+  sys.source(file.path(project_root, "R", script_name), envir = stage_env)
+  stage_fun <- stage_env[[fun_name]]
+  if (!is.function(stage_fun)) {
+    stop(sprintf("Expected function `%s` in script `%s`.", fun_name, script_name))
+  }
+  environment(stage_fun) <- stage_env
+  stage_fun
+}
+
+build_fishnet_and_target <- load_stage_function("01_setup_target.R", "build_fishnet_and_target")
+compute_topography_hydrology_watershed <- load_stage_function("02_features_topography_hydrology_watershed.R", "compute_topography_hydrology_watershed")
+compute_landcover_built_features <- load_stage_function("03_features_landcover_built.R", "compute_landcover_built_features")
+merge_and_clean_features <- load_stage_function("04_merge_eda_clean.R", "merge_and_clean_features")
+run_glm_diagnostics <- load_stage_function("05_model_diagnostics.R", "run_glm_diagnostics")
 
 # Read the boundary once so the report can lock the projected analysis CRS.
 boundary_meta <- st_read(file.path(project_root, "data", "calgary_boundary.shp"), quiet = TRUE)
-analysis_crs_input <- st_crs(boundary_meta)$input
+analysis_crs_input <- st_crs(boundary_meta)$wkt
+
 
 # Define the stable predictor names that later City X work will reuse.
 predictor_cols <- c(
@@ -63,7 +92,7 @@ predictor_cols <- c(
 # Build one shared config list, then override thresholds by stage where needed.
 base_config <- list(
   project_root = project_root,
-  fishnet_size_m = 30,
+  fishnet_size_m = 60,
   seed = 20250322L,
   target_col = "target",
   predictor_cols = predictor_cols,
@@ -82,9 +111,9 @@ base_config <- list(
     figures_dir = file.path(project_root, "outputs", "figures"),
     eda_fig_dir = file.path(project_root, "outputs", "figures", "eda"),
     diag_fig_dir = file.path(project_root, "outputs", "figures", "diagnostics"),
-    fishnet_base = file.path(project_root, "outputs", "intermediate", "fishnet_30m.gpkg"),
-    fishnet_target = file.path(project_root, "outputs", "intermediate", "fishnet_target.gpkg"),
-    target_summary = file.path(project_root, "outputs", "intermediate", "fishnet_target_summary.csv"),
+    fishnet_base = file.path(project_root, "outputs", "intermediate", "fishnet_60m.gpkg"),
+    fishnet_target = file.path(project_root, "outputs", "intermediate", "fishnet_target_60m.gpkg"),
+    target_summary = file.path(project_root, "outputs", "intermediate", "fishnet_target_summary_60m.csv"),
     features_topography = file.path(project_root, "outputs", "intermediate", "features_topography.csv"),
     features_hydrology = file.path(project_root, "outputs", "intermediate", "features_hydrology.csv"),
     features_watershed = file.path(project_root, "outputs", "intermediate", "features_watershed.csv"),
@@ -164,7 +193,7 @@ The inundation raster behaves as a binary target layer with `0` and `1` as valid
 # Fishnet creation
 
 ```{r}
-# Create the 30 m Calgary fishnet aligned to the boundary CRS and write the base output.
+# Create the 60 m Calgary fishnet aligned to the boundary CRS and write the base output.
 fishnet_results <- build_fishnet_and_target(target_config)
 fishnet_base <- st_read(base_config$paths$fishnet_base, quiet = TRUE)
 
@@ -174,7 +203,7 @@ fishnet_base_summary <- tibble::tibble(
   unique_ids = dplyr::n_distinct(fishnet_base$id),
   crs = st_crs(fishnet_base)$input
 )
-knitr::kable(fishnet_base_summary, caption = "Base 30 m fishnet checks")
+knitr::kable(fishnet_base_summary, caption = "Base 60 m fishnet checks")
 ```
 
 The base fishnet contains one row per Calgary grid cell in the projected local CRS. Later steps only keep cells with valid inundation coverage, but the base grid is still saved for reuse and inspection.
@@ -374,3 +403,5 @@ The strongest practical value of this report is transparency. Fishnet creation, 
 This Calgary-only workflow still has two important limitations. First, the watershed stage is computationally heavy because it relies on centroid-based hydrologic routing at city scale. Second, the final model quality should be interpreted with the usual caution for transfer learning: even a well-performing Calgary model may require recalibration before it is applied in another city.
 
 The next step for City X deployment is to reproduce the same predictor set with the same variable names and the same preprocessing contract. Once those City X features exist, the saved scaling rules and `glm` object can be used to produce probability surfaces without changing the Calgary training workflow.
+
+

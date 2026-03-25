@@ -43,7 +43,7 @@ build_fishnet_and_target <- function(config = list()) {
 
   base_fishnet_path <- paths$fishnet_base %||% file.path(intermediate_dir, "fishnet_30m.gpkg")
   target_fishnet_path <- paths$fishnet_target %||% file.path(intermediate_dir, "fishnet_target.gpkg")
-  target_summary_path <- file.path(intermediate_dir, "fishnet_target_summary.csv")
+  target_summary_path <- paths$target_summary %||% file.path(intermediate_dir, "fishnet_target_summary.csv")
 
   boundary_path <- file.path(data_dir, "calgary_boundary.shp")
   inundation_candidates <- c(
@@ -102,7 +102,7 @@ build_fishnet_and_target <- function(config = list()) {
   valid_mask_10 <- terra::ifel(is.na(inundation_clean), NA, 1)
   cell_id_10 <- terra::init(inundation_clean, "cell")
 
-  # Aggregate the 10 m raster to 30 m blocks so interior cells can be summarized quickly.
+  # Aggregate the 10 m raster to the requested fishnet size so interior cells can be summarized quickly.
   valid_count_30 <- terra::aggregate(valid_mask_10, fact = agg_fact, fun = "sum", na.rm = TRUE)
   inund_count_30 <- terra::aggregate(inundation_clean, fact = agg_fact, fun = "sum", na.rm = TRUE)
   cell_id_30 <- terra::aggregate(cell_id_10, fact = agg_fact, fun = "min", na.rm = TRUE)
@@ -110,7 +110,7 @@ build_fishnet_and_target <- function(config = list()) {
   names(valid_count_30) <- "valid_inund_cells"
   names(inund_count_30) <- "inundated_cells"
 
-  # Convert the 30 m raster blocks to polygons and clip them to the Calgary boundary.
+  # Convert the aggregated raster blocks to polygons and clip them to the Calgary boundary.
   fishnet_vect <- terra::as.polygons(cell_id_30, dissolve = FALSE, values = TRUE, na.rm = TRUE)
   fishnet_vect <- terra::intersect(fishnet_vect, boundary_vect)
   fishnet_sf <- sf::st_as_sf(fishnet_vect)
@@ -228,6 +228,7 @@ build_fishnet_and_target <- function(config = list()) {
     )
   ))
 }
+
 
 
 
